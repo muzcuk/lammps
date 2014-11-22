@@ -67,10 +67,6 @@ FixBondBreak::FixBondBreak(LAMMPS *lmp, int narg, char **arg) :
   if (atom->molecular != 1)
     error->all(FLERR,"Cannot use fix bond/break with non-molecular systems");
 
-  // initialize Marsaglia RNG with processor-unique seed
-
-  random = new RanMars(lmp,seed + me);
-
   // set comm sizes needed by this fix
   // forward is big due to comm of broken bonds and 1-2 neighbors
 
@@ -122,7 +118,6 @@ int FixBondBreak::setmask()
 {
   int mask = 0;
   mask |= POST_INTEGRATE;
-  mask |= POST_INTEGRATE_RESPA;
   return mask;
 }
 
@@ -133,20 +128,8 @@ void FixBondBreak::init()
   if (strstr(update->integrate_style,"respa"))
     nlevels_respa = ((Respa *) update->integrate)->nlevels;
 
-  // enable angle/dihedral/improper breaking if any defined
-
-  if (atom->nangles) angleflag = 1;
-  else angleflag = 0;
-  if (atom->ndihedrals) dihedralflag = 1;
-  else dihedralflag = 0;
-  if (atom->nimpropers) improperflag = 1;
-  else improperflag = 0;
-
-  if (force->improper) {
-    if (force->improper_match("class2") || force->improper_match("ring"))
-      error->all(FLERR,"Cannot yet use fix bond/break with this "
-                 "improper style");
-  }
+  // we only have dihedrals to break after manipulating bonds
+  // nothing to do with angles and impropers
 
   lastcheck = -1;
 
@@ -219,15 +202,12 @@ void FixBondBreak::post_integrate()
     dely = x[i1][1] - x[i2][1];
     delz = x[i1][2] - x[i2][2];
     rsq = delx*delx + dely*dely + delz*delz;
+    
     if (rsq <= cutsq) continue;
 
-    if (rsq > distsq[i1]) {
-      partner[i1] = tag[i2];
-      distsq[i1] = rsq;
-    }
-    if (rsq > distsq[i2]) {
-      partner[i2] = tag[i1];
-      distsq[i2] = rsq;
+    partner[i1] = tag[i2];
+    partner[i2] = tag[i1];
+
     }
   }
 
@@ -236,13 +216,6 @@ void FixBondBreak::post_integrate()
   if (force->newton_bond) comm->reverse_comm_fix(this);
 
   // each atom now knows its winning partner
-  // for prob check, generate random value for each atom with a bond partner
-  // forward comm of partner and random value, so ghosts have it
-
-  if (fraction < 1.0) {
-    for (i = 0; i < nlocal; i++)
-      if (partner[i]) probability[i] = random->uniform();
-  }
 
   commflag = 1;
   comm->forward_comm_fix(this,2);
@@ -261,17 +234,9 @@ void FixBondBreak::post_integrate()
   for (i = 0; i < nlocal; i++) {
     if (partner[i] == 0) continue;
     j = atom->map(partner[i]);
-    if (partner[j] != tag[i]) continue;
 
-    // apply probability constraint using RN for atom with smallest ID
-
-    if (fraction < 1.0) {
-      if (tag[i] < tag[j]) {
-        if (probability[i] >= fraction) continue;
-      } else {
-        if (probability[j] >= fraction) continue;
-      }
-    }
+    // this is more of a sanity check now, can be disabled for performance
+    if (partner[j] != tag[i]) continue; 
 
     // delete bond from atom I if I stores it
     // atom J will also do this
@@ -440,9 +405,7 @@ void FixBondBreak::update_topology()
       if (!influence) continue;
       influenced = 1;
 
-      if (angleflag) break_angles(i,id1,id2);
-      if (dihedralflag) break_dihedrals(i,id1,id2);
-      if (improperflag) break_impropers(i,id1,id2);
+      break_dihedrals(i,id1,id2);
     }
 
     if (influenced) rebuild_special(i);
@@ -451,21 +414,14 @@ void FixBondBreak::update_topology()
   int newton_bond = force->newton_bond;
 
   int all;
-  if (angleflag) {
-    MPI_Allreduce(&nangles,&all,1,MPI_INT,MPI_SUM,world);
-    if (!newton_bond) all /= 3;
-    atom->nangles -= all;
-  }
-  if (dihedralflag) {
-    MPI_Allreduce(&ndihedrals,&all,1,MPI_INT,MPI_SUM,world);
-    if (!newton_bond) all /= 4;
-    atom->ndihedrals -= all;
-  }
-  if (improperflag) {
-    MPI_Allreduce(&nimpropers,&all,1,MPI_INT,MPI_SUM,world);
-    if (!newton_bond) all /= 4;
-    atom->nimpropers -= all;
-  }
+
+  // something about total number of broken dihedrals
+  
+  // if (dihedralflag) {
+  MPI_Allreduce(&ndihedrals,&all,1,MPI_INT,MPI_SUM,world);
+  if (!newton_bond) all /= 4;
+  atom->ndihedrals -= all;
+  //}
 }
 
 /* ----------------------------------------------------------------------
@@ -530,44 +486,6 @@ void FixBondBreak::rebuild_special(int m)
 }
 
 /* ----------------------------------------------------------------------
-   break any angles owned by atom M that include atom IDs 1 and 2
-   angle is broken if ID1-ID2 is one of 2 bonds in angle (I-J,J-K)
-------------------------------------------------------------------------- */
-
-void FixBondBreak::break_angles(int m, tagint id1, tagint id2)
-{
-  int j,found;
-
-  int num_angle = atom->num_angle[m];
-  int *angle_type = atom->angle_type[m];
-  tagint *angle_atom1 = atom->angle_atom1[m];
-  tagint *angle_atom2 = atom->angle_atom2[m];
-  tagint *angle_atom3 = atom->angle_atom3[m];
-
-  int i = 0;
-  while (i < num_angle) {
-    found = 0;
-    if (angle_atom1[i] == id1 && angle_atom2[i] == id2) found = 1;
-    else if (angle_atom2[i] == id1 && angle_atom3[i] == id2) found = 1;
-    else if (angle_atom1[i] == id2 && angle_atom2[i] == id1) found = 1;
-    else if (angle_atom2[i] == id2 && angle_atom3[i] == id1) found = 1;
-    if (!found) i++;
-    else {
-      for (j = i; j < num_angle-1; j++) {
-        angle_type[j] = angle_type[j+1];
-        angle_atom1[j] = angle_atom1[j+1];
-        angle_atom2[j] = angle_atom2[j+1];
-        angle_atom3[j] = angle_atom3[j+1];
-      }
-      num_angle--;
-      nangles++;
-    }
-  }
-
-  atom->num_angle[m] = num_angle;
-}
-
-/* ----------------------------------------------------------------------
    break any dihedrals owned by atom M that include atom IDs 1 and 2
    dihedral is broken if ID1-ID2 is one of 3 bonds in dihedral (I-J,J-K.K-L)
 ------------------------------------------------------------------------- */
@@ -607,48 +525,6 @@ void FixBondBreak::break_dihedrals(int m, tagint id1, tagint id2)
   }
 
   atom->num_dihedral[m] = num_dihedral;
-}
-
-/* ----------------------------------------------------------------------
-   break any impropers owned by atom M that include atom IDs 1 and 2
-   improper is broken if ID1-ID2 is one of 3 bonds in improper (I-J,I-K,I-L)
-------------------------------------------------------------------------- */
-
-void FixBondBreak::break_impropers(int m, tagint id1, tagint id2)
-{
-  int j,found;
-
-  int num_improper = atom->num_improper[m];
-  int *improper_type = atom->improper_type[m];
-  tagint *improper_atom1 = atom->improper_atom1[m];
-  tagint *improper_atom2 = atom->improper_atom2[m];
-  tagint *improper_atom3 = atom->improper_atom3[m];
-  tagint *improper_atom4 = atom->improper_atom4[m];
-
-  int i = 0;
-  while (i < num_improper) {
-    found = 0;
-    if (improper_atom1[i] == id1 && improper_atom2[i] == id2) found = 1;
-    else if (improper_atom1[i] == id1 && improper_atom3[i] == id2) found = 1;
-    else if (improper_atom1[i] == id1 && improper_atom4[i] == id2) found = 1;
-    else if (improper_atom1[i] == id2 && improper_atom2[i] == id1) found = 1;
-    else if (improper_atom1[i] == id2 && improper_atom3[i] == id1) found = 1;
-    else if (improper_atom1[i] == id2 && improper_atom4[i] == id1) found = 1;
-    if (!found) i++;
-    else {
-      for (j = i; j < num_improper-1; j++) {
-        improper_type[j] = improper_type[j+1];
-        improper_atom1[j] = improper_atom1[j+1];
-        improper_atom2[j] = improper_atom2[j+1];
-        improper_atom3[j] = improper_atom3[j+1];
-        improper_atom4[j] = improper_atom4[j+1];
-      }
-      num_improper--;
-      nimpropers++;
-    }
-  }
-
-  atom->num_improper[m] = num_improper;
 }
 
 /* ----------------------------------------------------------------------
