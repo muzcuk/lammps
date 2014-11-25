@@ -208,7 +208,6 @@ void FixBondBreak::post_integrate()
     partner[i1] = tag[i2];
     partner[i2] = tag[i1];
 
-    }
   }
 
   // reverse comm of partner info
