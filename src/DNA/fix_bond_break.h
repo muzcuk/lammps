@@ -48,7 +48,7 @@ class FixBondBreak : public Fix {
 
   int breakcount,breakcounttotal;
   int nmax;
-  tagint *partner,*finalpartner;
+  tagint *partner;
   double *distsq,*probability;
 
   int nbreak,maxbreak;

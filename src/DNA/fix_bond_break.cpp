@@ -76,7 +76,7 @@ FixBondBreak::FixBondBreak(LAMMPS *lmp, int narg, char **arg) :
   // allocate arrays local to this fix
 
   nmax = 0;
-  partner = finalpartner = NULL;
+  partner = NULL;
   distsq = NULL;
 
   maxbreak = 0;
@@ -106,7 +106,6 @@ FixBondBreak::~FixBondBreak()
   // delete locally stored arrays
 
   memory->destroy(partner);
-  memory->destroy(finalpartner);
   memory->destroy(distsq);
   memory->destroy(broken);
   delete [] copy;
@@ -163,11 +162,9 @@ void FixBondBreak::post_integrate()
 
   if (atom->nmax > nmax) {
     memory->destroy(partner);
-    memory->destroy(finalpartner);
     memory->destroy(distsq);
     nmax = atom->nmax;
     memory->create(partner,nmax,"bond/break:partner");
-    memory->create(finalpartner,nmax,"bond/break:finalpartner");
     memory->create(distsq,nmax,"bond/break:distsq");
     probability = distsq;
   }
@@ -177,7 +174,6 @@ void FixBondBreak::post_integrate()
 
   for (i = 0; i < nall; i++) {
     partner[i] = 0;
-    finalpartner[i] = 0;
     distsq[i] = 0.0;
   }
 
@@ -266,8 +262,8 @@ void FixBondBreak::post_integrate()
 
     // store final broken bond partners and count the broken bond once
 
-    finalpartner[i] = tag[j];
-    finalpartner[j] = tag[i];
+ //   finalpartner[i] = tag[j];
+ //   finalpartner[j] = tag[i];
     if (tag[i] < tag[j]) nbreak++;
   }
 
@@ -299,15 +295,15 @@ void FixBondBreak::post_integrate()
 
   nbreak = 0;
   for (i = 0; i < nall; i++) {
-    if (finalpartner[i] == 0) continue;
-    j = atom->map(finalpartner[i]);
+    if (partner[i] == 0) continue;
+    j = atom->map(partner[i]);
     if (j < 0 || tag[i] < tag[j]) {
       if (nbreak == maxbreak) {
         maxbreak += DELTA;
         memory->grow(broken,maxbreak,2,"bond/break:broken");
       }
       broken[nbreak][0] = tag[i];
-      broken[nbreak][1] = finalpartner[i];
+      broken[nbreak][1] = partner[i];
       nbreak++;
     }
   }
@@ -580,7 +576,7 @@ int FixBondBreak::pack_forward_comm(int n, int *list, double *buf,
   m = 0;
   for (i = 0; i < n; i++) {
     j = list[i];
-    buf[m++] = ubuf(finalpartner[j]).d;
+    buf[m++] = ubuf(partner[j]).d;
     ns = nspecial[j][0];
     buf[m++] = ubuf(ns).d;
     for (k = 0; k < ns; k++)
@@ -611,7 +607,7 @@ void FixBondBreak::unpack_forward_comm(int n, int first, double *buf)
     m = 0;
     last = first + n;
     for (i = first; i < last; i++) {
-      finalpartner[i] = (tagint) ubuf(buf[m++]).i;
+      partner[i] = (tagint) ubuf(buf[m++]).i;
       ns = (int) ubuf(buf[m++]).i;
       nspecial[i][0] = ns;
       for (j = 0; j < ns; j++)
