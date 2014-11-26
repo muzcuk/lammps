@@ -35,8 +35,6 @@ class FixBondBreak : public Fix {
 
   int pack_forward_comm(int, int *, double *, int, int *);
   void unpack_forward_comm(int, int, double *);
-  int pack_reverse_comm(int, int, double *);
-  void unpack_reverse_comm(int, int *, double *);
   double compute_vector(int);
   double memory_usage();
 
@@ -49,7 +47,6 @@ class FixBondBreak : public Fix {
   int breakcount,breakcounttotal;
   int nmax;
   tagint *partner;
-  double *distsq,*probability;
 
   int nbreak,maxbreak;
   tagint **broken;

@@ -68,16 +68,15 @@ FixBondBreak::FixBondBreak(LAMMPS *lmp, int narg, char **arg) :
     error->all(FLERR,"Cannot use fix bond/break with non-molecular systems");
 
   // set comm sizes needed by this fix
-  // forward is big due to comm of broken bonds and 1-2 neighbors
+  // forward is 4 because nspecial (1-2) + maximum of 3 (1-2) neighbors
 
-  comm_forward = MAX(2,2+atom->maxspecial);
-  comm_reverse = 2;
+  comm_forward = 4;
+  //comm_reverse = 2;
 
   // allocate arrays local to this fix
 
   nmax = 0;
   partner = NULL;
-  distsq = NULL;
 
   maxbreak = 0;
   broken = NULL;
@@ -106,7 +105,6 @@ FixBondBreak::~FixBondBreak()
   // delete locally stored arrays
 
   memory->destroy(partner);
-  memory->destroy(distsq);
   memory->destroy(broken);
   delete [] copy;
 }
@@ -157,16 +155,12 @@ void FixBondBreak::post_integrate()
   comm->forward_comm();
 
   // resize bond partner list and initialize it
-  // probability array overlays distsq array
   // needs to be atom->nmax in length
 
   if (atom->nmax > nmax) {
     memory->destroy(partner);
-    memory->destroy(distsq);
     nmax = atom->nmax;
     memory->create(partner,nmax,"bond/break:partner");
-    memory->create(distsq,nmax,"bond/break:distsq");
-    probability = distsq;
   }
 
   int nlocal = atom->nlocal;
@@ -174,11 +168,10 @@ void FixBondBreak::post_integrate()
 
   for (i = 0; i < nall; i++) {
     partner[i] = 0;
-    distsq[i] = 0.0;
   }
 
   // loop over bond list
-  // setup possible partner list of bonds to break
+  // setup list of bonds to break
 
   double **x = atom->x;
   tagint *tag = atom->tag;
@@ -206,18 +199,10 @@ void FixBondBreak::post_integrate()
 
   }
 
-  // reverse comm of partner info
-
-  if (force->newton_bond) comm->reverse_comm_fix(this);
-
-  // each atom now knows its winning partner
-
   commflag = 1;
   comm->forward_comm_fix(this,2);
 
   // break bonds
-  // if both atoms list each other as winning bond partner
-  // and probability constraint is satisfied
 
   int **bond_type = atom->bond_type;
   tagint **bond_atom = atom->bond_atom;
@@ -565,7 +550,6 @@ int FixBondBreak::pack_forward_comm(int n, int *list, double *buf,
     for (i = 0; i < n; i++) {
       j = list[i];
       buf[m++] = ubuf(partner[j]).d;
-      buf[m++] = probability[j];
     }
     return m;
   }
@@ -576,7 +560,7 @@ int FixBondBreak::pack_forward_comm(int n, int *list, double *buf,
   m = 0;
   for (i = 0; i < n; i++) {
     j = list[i];
-    buf[m++] = ubuf(partner[j]).d;
+   // buf[m++] = ubuf(partner[j]).d;
     ns = nspecial[j][0];
     buf[m++] = ubuf(ns).d;
     for (k = 0; k < ns; k++)
@@ -596,7 +580,6 @@ void FixBondBreak::unpack_forward_comm(int n, int first, double *buf)
     last = first + n;
     for (i = first; i < last; i++) {
       partner[i] = (tagint) ubuf(buf[m++]).i;
-      probability[i] = buf[m++];
     }
 
   } else {
@@ -607,7 +590,7 @@ void FixBondBreak::unpack_forward_comm(int n, int first, double *buf)
     m = 0;
     last = first + n;
     for (i = first; i < last; i++) {
-      partner[i] = (tagint) ubuf(buf[m++]).i;
+ //     partner[i] = (tagint) ubuf(buf[m++]).i;
       ns = (int) ubuf(buf[m++]).i;
       nspecial[i][0] = ns;
       for (j = 0; j < ns; j++)
@@ -616,8 +599,7 @@ void FixBondBreak::unpack_forward_comm(int n, int first, double *buf)
   }
 }
 
-/* ---------------------------------------------------------------------- */
-
+/* ---------------------------------------------------------------------- 
 int FixBondBreak::pack_reverse_comm(int n, int first, double *buf)
 {
   int i,m,last;
@@ -626,12 +608,10 @@ int FixBondBreak::pack_reverse_comm(int n, int first, double *buf)
   last = first + n;
   for (i = first; i < last; i++) {
     buf[m++] = ubuf(partner[i]).d;
-    buf[m++] = distsq[i];
   }
   return m;
 }
 
-/* ---------------------------------------------------------------------- */
 
 void FixBondBreak::unpack_reverse_comm(int n, int *list, double *buf)
 {
@@ -640,15 +620,12 @@ void FixBondBreak::unpack_reverse_comm(int n, int *list, double *buf)
   m = 0;
   for (i = 0; i < n; i++) {
     j = list[i];
-    if (buf[m+1] > distsq[j]) {
-      partner[j] = (tagint) ubuf(buf[m++]).i;
-      distsq[j] = buf[m++];
-    } else m += 2;
+    partner[j] = (tagint) ubuf(buf[m++]).i;
   }
 }
 
 
-/* ---------------------------------------------------------------------- */
+ ---------------------------------------------------------------------- */
 
 void FixBondBreak::print_bb()
 {
