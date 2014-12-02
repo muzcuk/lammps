@@ -15,7 +15,7 @@
 #include "mpi.h"
 #include "string.h"
 #include "stdlib.h"
-#include "fix_bond_break.h"
+#include "fix_bond_update.h"
 #include "update.h"
 #include "respa.h"
 #include "atom.h"
@@ -35,7 +35,7 @@ using namespace FixConst;
 
 /* ---------------------------------------------------------------------- */
 
-FixBondBreak::FixBondBreak(LAMMPS *lmp, int narg, char **arg) :
+FixBondUpdate::FixBondUpdate(LAMMPS *lmp, int narg, char **arg) :
   Fix(lmp, narg, arg)
 {
   if (narg != 6 ) error->all(FLERR,"Illegal fix bond/break command");
@@ -70,7 +70,7 @@ FixBondBreak::FixBondBreak(LAMMPS *lmp, int narg, char **arg) :
   // set comm sizes needed by this fix
   // forward is 4 because nspecial (1-2) + maximum of 3 (1-2) neighbors
 
-  comm_forward = 4;
+  //comm_forward = 4;
   //comm_reverse = 2;
 
   // allocate arrays local to this fix
@@ -98,7 +98,7 @@ FixBondBreak::FixBondBreak(LAMMPS *lmp, int narg, char **arg) :
 
 /* ---------------------------------------------------------------------- */
 
-FixBondBreak::~FixBondBreak()
+FixBondUpdate::~FixBondUpdate()
 {
   delete random;
 
@@ -111,7 +111,7 @@ FixBondBreak::~FixBondBreak()
 
 /* ---------------------------------------------------------------------- */
 
-int FixBondBreak::setmask()
+int FixBondUpdate::setmask()
 {
   int mask = 0;
   mask |= POST_INTEGRATE;
@@ -120,7 +120,7 @@ int FixBondBreak::setmask()
 
 /* ---------------------------------------------------------------------- */
 
-void FixBondBreak::init()
+void FixBondUpdate::init()
 {
   if (strstr(update->integrate_style,"respa"))
     nlevels_respa = ((Respa *) update->integrate)->nlevels;
@@ -136,7 +136,7 @@ void FixBondBreak::init()
 
 /* ---------------------------------------------------------------------- */
 
-void FixBondBreak::post_integrate()
+void FixBondUpdate::post_integrate()
 {
   int i,j,k,m,n,i1,i2,n1,n3,type;
   double delx,dely,delz,rsq;
@@ -147,9 +147,6 @@ void FixBondBreak::post_integrate()
   // check that all procs have needed ghost atoms within ghost cutoff
   // only if neighbor list has changed since last check
 
-  if (lastcheck < neighbor->lastcall) check_ghosts();
-
-  // acquire updated ghost atom positions
   // necessary b/c are calling this after integrate, but before Verlet comm
 
   comm->forward_comm();
@@ -179,85 +176,59 @@ void FixBondBreak::post_integrate()
   int **bondlist = neighbor->bondlist;
   int nbondlist = neighbor->nbondlist;
 
-  for (n = 0; n < nbondlist; n++) {
-    i1 = bondlist[n][0];
-    i2 = bondlist[n][1];
-    type = bondlist[n][2];
-    if (!(mask[i1] & groupbit)) continue;
-    if (!(mask[i2] & groupbit)) continue;
-    if (type != btype) continue;
 
-    delx = x[i1][0] - x[i2][0];
-    dely = x[i1][1] - x[i2][1];
-    delz = x[i1][2] - x[i2][2];
-    rsq = delx*delx + dely*dely + delz*delz;
-    
-    if (rsq <= cutsq) continue;
-
-    partner[i1] = tag[i2];
-    partner[i2] = tag[i1];
-
-  }
-
-  commflag = 1;
-  comm->forward_comm_fix(this,2);
-
-  // break bonds
-
+ 
   int **bond_type = atom->bond_type;
   tagint **bond_atom = atom->bond_atom;
   int *num_bond = atom->num_bond;
   int **nspecial = atom->nspecial;
   tagint **special = atom->special;
-
   nbreak = 0;
+  int ji;
+
   for (i = 0; i < nlocal; i++) {
-    if (partner[i] == 0) continue;
-    j = atom->map(partner[i]);
-
-    // this is more of a sanity check now, can be disabled for performance
-    if (partner[j] != tag[i]) continue; 
-
+	
     // delete bond from atom I if I stores it
     // atom J will also do this
 
     for (m = 0; m < num_bond[i]; m++) {
-	
-      //if bound harcos
-      if (bond_type[i][m] == btype) { 
-       
-	  // break the bond
-	  if (rsq >= cutsq)  
-	          bond_type[i][m] *= -1;
+	    if (!(mask[i] & groupbit)) continue;
+	    
+	    if (abs(bond_type[i][m]) != btype) continue;
+		
+	    // j is the tag of partner atom
+	    
+	    j = bond_atom[i][m]; 
+	    ji = atom->map(j);
+	    
+	    if (!(mask[ji] & groupbit)) continue;
+
+	    //check if we have j in this domain
+	    
+	    if (ji == -1) continue; 
+	    
+	    delx = x[i][0] - x[ji][0];
+	    dely = x[i][1] - x[ji][1];
+	    delz = x[i][2] - x[ji][2];
+
+	    rsq = delx*delx + dely*dely + delz*delz;
+
+	    if (bond_type[i][m] == btype) {
+		    
+		    if (rsq <= cutsq)    continue;
+
+		    disable_bond(i,m);
+		    continue;
+	    }
+	    
+	    if (bond_type[i][m] == -btype) {
+		    
+		    if (rsq > cutsq)	continue;
+
+		    enable_bond (i,m);
+		    continue;
+	    }
         }
-
-      }
-      // broken harcos
-      else if (bond_type[i][m] == -btype) {
-
-	      //reconnect the bond
-	      if ( rsq < cutsq )
-		  bond_type[i][m] *=-1;
-      }		  
-
-    }
-
-    // remove J from special bond list for atom I
-    // atom J will also do this, whatever proc it is on
-
-    slist = special[i];
-    n1 = nspecial[i][0];
-    for (m = 0; m < n1; m++)
-      if (slist[m] == partner[i]) break;
-    n3 = nspecial[i][2];
-    for (; m < n3-1; m++) slist[m] = slist[m+1];
-    nspecial[i][0]--;
-    nspecial[i][1]--;
-    nspecial[i][2]--;
-
-    // store final broken bond partners and count the broken bond once
-
-    if (tag[i] < tag[j]) nbreak++;
   }
 
   // tally stats
@@ -278,31 +249,94 @@ void FixBondBreak::post_integrate()
 }
 
 /*------------
-flip the Nth bond and all dihedrals owned by atom M
+disable the Bth bond and all dihedrals owned by atom M
 */
 
-void FiBondBreak::disable_bond(int m, int b) {
+void FixBondUpdate::disable_bond(int m, int b) {
 	
 	int i;
+	tagint partner;
 
 	int *bond_type = atom->bond_type[m];
+  	tagint *bond_atom = atom->bond_atom[m];
 	
 	int num_dihedral = atom->num_dihedral[m];
 	int *dihedral_type = atom->dihedral_type[m];
+
+	int *nspecial = atom->nspecial[m];
+	tagint *special = atom->special[m];
+
  
-	// flip the jth bond
-	bond_type[n] *= -btype;
+	// disable the jth bond
+	bond_type[b] = -btype;
 	
-	// flip all dihedrals
-	for(i = 0; i < num_dihedral; i++) 
-		dihedral_type[i] *= -1;
-     
+	// disable all dihedrals
+	for (i = 0; i < num_dihedral; i++) 
+		dihedral_type[i] = -abs(dihedral_type[i]);
+
+
+	// remove partner from 1-2 special list
+	
+	partner = bond_atom[b];
+	
+	for (i=0; i< nspecial[0]; i++)
+		if (special[i] == partner) 
+			break;
+
+	for ( ; i<nspecial[2]-1; i++)
+		special[i]=special[i+1];
+
+	nspecial[0]--;
+	nspecial[1]--;
+	nspecial[2]--;
 }
+
+/*------------
+disable the Bth bond and all dihedrals owned by atom M
+*/
+
+void FixBondUpdate::enable_bond(int m, int b) {
+	
+	int i;
+	tagint partner;
+
+	int *bond_type = atom->bond_type[m];
+  	tagint *bond_atom = atom->bond_atom[m];
+	
+	int num_dihedral = atom->num_dihedral[m];
+	int *dihedral_type = atom->dihedral_type[m];
+
+	int *nspecial = atom->nspecial[m];
+	tagint *special = atom->special[m];
+
+ 
+	// enable the jth bond
+	bond_type[b] = btype;
+	
+	// enable all dihedrals
+	for (i = 0; i < num_dihedral; i++) 
+		dihedral_type[i] = abs(dihedral_type[i]);
+
+
+	// add partner to 1-2 special list
+	
+	partner = bond_atom[b];
+
+	for ( i = nspecial[0]; i<nspecial[2]; i++)
+		special[i+1]=special[i];
+
+	special[nspecial[0]]=partner;
+
+	nspecial[0]++;
+	nspecial[1]++;
+	nspecial[2]++;
+}
+
 
 
 //***---------------------------------------------------------------------
 
-double FixBondBreak::compute_vector(int n)
+double FixBondUpdate::compute_vector(int n)
 {
   if (n == 1) return (double) breakcount;
   return (double) breakcounttotal;
@@ -312,7 +346,7 @@ double FixBondBreak::compute_vector(int n)
    memory usage of local atom-based arrays
 ------------------------------------------------------------------------- */
 
-double FixBondBreak::memory_usage()
+double FixBondUpdate::memory_usage()
 {
   int nmax = atom->nmax;
   double bytes = 2*nmax * sizeof(tagint);

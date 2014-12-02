@@ -13,28 +13,25 @@
 
 #ifdef FIX_CLASS
 
-FixStyle(bond/break,FixBondBreak)
+FixStyle(bond/update,FixBondUpdate)
 
 #else
 
-#ifndef LMP_FIX_BOND_BREAK_H
-#define LMP_FIX_BOND_BREAK_H
+#ifndef LMP_FIX_BOND_UPDATE_H
+#define LMP_FIX_BOND_UPDATE_H
 
 #include "fix.h"
 
 namespace LAMMPS_NS {
 
-class FixBondBreak : public Fix {
+class FixBondUpdate : public Fix {
  public:
-  FixBondBreak(class LAMMPS *, int, char **);
-  ~FixBondBreak();
+  FixBondUpdate(class LAMMPS *, int, char **);
+  ~FixBondUpdate();
   int setmask();
   void init();
   void post_integrate();
-  void post_integrate_respa(int,int);
 
-  int pack_forward_comm(int, int *, double *, int, int *);
-  void unpack_forward_comm(int, int, double *);
   double compute_vector(int);
   double memory_usage();
 
@@ -60,11 +57,8 @@ class FixBondBreak : public Fix {
   int nbroken;
   int nangles,ndihedrals,nimpropers;
 
-  void check_ghosts();
-  void update_topology();
-  void break_dihedrals(int, tagint, tagint);
-  void rebuild_special(int);
-  int dedup(int, int, tagint *);
+  void enable_bond(int, int);
+  void disable_bond(int,int);
   
   // DEBUG
 
